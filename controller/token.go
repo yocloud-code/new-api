@@ -194,6 +194,7 @@ func AddToken(c *gin.Context) {
 		AllowIps:           token.AllowIps,
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
+		FallbackModels:     token.FallbackModels,
 	}
 	err = cleanToken.Insert()
 	if err != nil {
@@ -274,6 +275,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		cleanToken.FallbackModels = token.FallbackModels
 	}
 	err = cleanToken.Update()
 	if err != nil {

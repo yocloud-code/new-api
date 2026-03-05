@@ -28,6 +28,7 @@ type Token struct {
 	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
+	FallbackModels     string         `json:"fallback_models" gorm:"type:text;default:''"`  // 降级调用链，逗号分隔模型名 (yocloud custom)
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -283,7 +284,7 @@ func (token *Token) Update() (err error) {
 		}
 	}()
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "fallback_models").Updates(token).Error
 	return err
 }
 
@@ -459,4 +460,23 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	return len(tokens), nil
+}
+
+// GetFallbackModels returns the fallback model chain as a slice (yocloud custom)
+func (token *Token) GetFallbackModels() []string {
+	if token.FallbackModels == "" {
+		return nil
+	}
+	models := strings.Split(token.FallbackModels, ",")
+	result := make([]string, 0, len(models))
+	for _, m := range models {
+		m = strings.TrimSpace(m)
+		if m != "" {
+			result = append(result, m)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
