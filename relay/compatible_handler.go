@@ -431,6 +431,12 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	}
 
 	logModel := modelName
+	// 降级场景：日志中记录用户请求的原始模型名，实际降级模型名放到 other 中（仅管理员可见）
+	if fallbackOriginal, exists := ctx.Get("fallback_original_model"); exists {
+		if origModel, ok := fallbackOriginal.(string); ok && origModel != modelName {
+			logModel = origModel
+		}
+	}
 	if strings.HasPrefix(logModel, "gpt-4-gizmo") {
 		logModel = "gpt-4-gizmo-*"
 		extraContent = append(extraContent, fmt.Sprintf("模型 %s", modelName))

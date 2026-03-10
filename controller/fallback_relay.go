@@ -169,6 +169,9 @@ func tryFallbackModels(
 		}
 	}
 
+	// 存储原始请求模型名，供日志记录时对非管理员隐藏降级模型
+	c.Set("fallback_original_model", originalModel)
+
 	for i, fbModel := range fallbackModels {
 		// Skip if same as original (already tried)
 		if fbModel == originalModel {
