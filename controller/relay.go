@@ -185,16 +185,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 
 	// ── Fallback chain: try alternative models if primary failed (yocloud custom) ──
-	fallbackModels := getFallbackModels(c)
+	fallbackModels, tokenCount := getFallbackModels(c)
 	if len(fallbackModels) > 0 {
-		logger.LogInfo(c, fmt.Sprintf("[fallback] 主模型 %s 失败，开始降级调用链: %v", relayInfo.OriginModelName, fallbackModels))
+		if tokenCount > 0 {
+			logger.LogInfo(c, fmt.Sprintf("[fallback] 主模型 %s 失败，开始降级调用链: %v", relayInfo.OriginModelName, fallbackModels[:tokenCount]))
+		}
 		originalModel := relayInfo.OriginModelName
-		fbErr := tryFallbackModels(c, relayInfo, relayFormat, fallbackModels, originalModel, meta, tokens)
+		fbErr := tryFallbackModels(c, relayInfo, relayFormat, fallbackModels, originalModel, meta, tokens, tokenCount)
 		if fbErr == nil {
 			newAPIError = nil
 			return
 		}
-		logger.LogError(c, fmt.Sprintf("[fallback] 降级调用链全部失败，原始模型: %s, 降级链: %v", originalModel, fallbackModels))
+		if tokenCount > 0 {
+			logger.LogError(c, fmt.Sprintf("[fallback] 降级调用链全部失败，原始模型: %s, 降级链: %v", originalModel, fallbackModels[:tokenCount]))
+		}
 	}
 
 	useChannel := c.GetStringSlice("use_channel")

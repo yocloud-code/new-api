@@ -7,6 +7,7 @@ package controller
 // sequentially try each fallback model with full channel retry.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,24 +20,58 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
 
-// getFallbackModels retrieves the fallback model chain for the current token.
-// Returns nil if no fallback is configured.
-func getFallbackModels(c *gin.Context) []string {
+// getFallbackModels 返回合并后的降级链和令牌级模型数量。
+// tokenCount 用于日志分级：索引 < tokenCount 的用 LogInfo，>= tokenCount 的用 LogDebug。
+func getFallbackModels(c *gin.Context) ([]string, int) {
+	// 令牌级降级链
+	var tokenFallbacks []string
 	tokenId := c.GetInt("token_id")
 	userId := c.GetInt("id")
-	if tokenId == 0 || userId == 0 {
+	if tokenId != 0 && userId != 0 {
+		token, err := model.GetTokenByIds(tokenId, userId)
+		if err == nil && token != nil {
+			tokenFallbacks = token.GetFallbackModels()
+		}
+	}
+
+	// 全局降级链
+	globalFallbacks := operation_setting.GetGlobalFallbackModels()
+
+	// 合并：令牌在前保持顺序，全局去重追加
+	merged := mergeFallbackModels(tokenFallbacks, globalFallbacks)
+	return merged, len(tokenFallbacks)
+}
+
+// mergeFallbackModels 合并令牌级和全局级降级链。
+// 令牌模型保持原序在前，全局模型去重后追加到末尾。
+func mergeFallbackModels(tokenModels, globalModels []string) []string {
+	if len(tokenModels) == 0 && len(globalModels) == 0 {
 		return nil
 	}
-	token, err := model.GetTokenByIds(tokenId, userId)
-	if err != nil || token == nil {
-		return nil
+	if len(globalModels) == 0 {
+		return tokenModels
 	}
-	return token.GetFallbackModels()
+	if len(tokenModels) == 0 {
+		return globalModels
+	}
+	seen := make(map[string]struct{}, len(tokenModels))
+	for _, m := range tokenModels {
+		seen[m] = struct{}{}
+	}
+	merged := make([]string, len(tokenModels))
+	copy(merged, tokenModels)
+	for _, m := range globalModels {
+		if _, exists := seen[m]; !exists {
+			merged = append(merged, m)
+		}
+	}
+	return merged
 }
 
 // relayWithRetry executes the channel-level retry loop for a single model.
@@ -113,6 +148,7 @@ func relayWithRetry(
 
 // tryFallbackModels attempts each fallback model in sequence.
 // For each model, it rewrites the request body's "model" field and runs full channel retry.
+// tokenCount controls log level: i < tokenCount uses LogInfo, i >= tokenCount uses LogDebug.
 // Returns nil on first success, or the last error if all fallbacks fail.
 func tryFallbackModels(
 	c *gin.Context,
@@ -122,14 +158,24 @@ func tryFallbackModels(
 	originalModel string,
 	meta *types.TokenCountMeta,
 	tokens int,
+	tokenCount int,
 ) *types.NewAPIError {
+	logFn := func(i int) func(ctx context.Context, msg string) {
+		if i < tokenCount {
+			return logger.LogInfo
+		}
+		return func(ctx context.Context, msg string) {
+			logger.LogDebug(ctx, msg)
+		}
+	}
+
 	for i, fbModel := range fallbackModels {
 		// Skip if same as original (already tried)
 		if fbModel == originalModel {
 			continue
 		}
 
-		logger.LogInfo(c, fmt.Sprintf("[fallback] 降级调用 %d/%d: %s → %s",
+		logFn(i)(c, fmt.Sprintf("[fallback] 降级调用 %d/%d: %s → %s",
 			i+1, len(fallbackModels), originalModel, fbModel))
 
 		// Rewrite model name in stored request body
@@ -155,11 +201,11 @@ func tryFallbackModels(
 		// Run full retry loop for this fallback model
 		fbErr := relayWithRetry(c, relayInfo, relayFormat)
 		if fbErr == nil {
-			logger.LogInfo(c, fmt.Sprintf("[fallback] 降级成功: 最终使用模型 %s (第 %d 级降级)", fbModel, i+1))
+			logFn(i)(c, fmt.Sprintf("[fallback] 降级成功: 最终使用模型 %s (第 %d 级降级)", fbModel, i+1))
 			return nil
 		}
 
-		logger.LogWarn(c, fmt.Sprintf("[fallback] 模型 %s 全部渠道失败: %s", fbModel, fbErr.Error()))
+		logFn(i)(c, fmt.Sprintf("[fallback] 模型 %s 全部渠道失败: %s", fbModel, fbErr.Error()))
 	}
 
 	return relayInfo.LastError
