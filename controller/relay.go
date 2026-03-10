@@ -149,39 +149,45 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	relayInfo.SetEstimatePromptTokens(tokens)
 
-	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
-	if err != nil {
-		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError)
-		return
-	}
+	skipPrimary := c.GetBool("skip_primary_relay")
 
-	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
-
-	if priceData.FreeModel {
-		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
-	} else {
-		newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
-		if newAPIError != nil {
+	if !skipPrimary {
+		priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
+		if err != nil {
+			newAPIError = types.NewError(err, types.ErrorCodeModelPriceError)
 			return
 		}
-	}
 
-	defer func() {
-		// Only return quota if downstream failed and quota was actually pre-consumed
-		if newAPIError != nil {
-			newAPIError = service.NormalizeViolationFeeError(newAPIError)
-			if relayInfo.Billing != nil {
-				relayInfo.Billing.Refund(c)
+		// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
+
+		if priceData.FreeModel {
+			logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
+		} else {
+			newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
+			if newAPIError != nil {
+				return
 			}
-			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
 		}
-	}()
 
-	// ── Primary model: channel-level retry loop ──
-	newAPIError = relayWithRetry(c, relayInfo, relayFormat)
+		defer func() {
+			// Only return quota if downstream failed and quota was actually pre-consumed
+			if newAPIError != nil {
+				newAPIError = service.NormalizeViolationFeeError(newAPIError)
+				if relayInfo.Billing != nil {
+					relayInfo.Billing.Refund(c)
+				}
+				service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			}
+		}()
 
-	if newAPIError == nil {
-		return
+		// ── Primary model: channel-level retry loop ──
+		newAPIError = relayWithRetry(c, relayInfo, relayFormat)
+
+		if newAPIError == nil {
+			return
+		}
+	} else {
+		logger.LogInfo(c, fmt.Sprintf("[fallback] 主模型 %s 无可用渠道，跳过主模型直接进入降级链", relayInfo.OriginModelName))
 	}
 
 	// ── Fallback chain: try alternative models if primary failed (yocloud custom) ──
@@ -199,6 +205,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if tokenCount > 0 {
 			logger.LogError(c, fmt.Sprintf("[fallback] 降级调用链全部失败，原始模型: %s, 降级链: %v", originalModel, fallbackModels[:tokenCount]))
 		}
+	}
+
+	// 如果 skipPrimary 且降级链也全部失败或为空，返回原始的无渠道错误
+	if skipPrimary && newAPIError == nil {
+		newAPIError = types.NewError(
+			fmt.Errorf("模型 %s 无可用渠道，降级链也全部失败", relayInfo.OriginModelName),
+			types.ErrorCodeModelNotFound,
+			types.ErrOptionWithSkipRetry(),
+		)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")

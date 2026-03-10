@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 
@@ -129,22 +130,25 @@ func Distribute() func(c *gin.Context) {
 						TokenGroup: usingGroup,
 						Retry:      common.GetPointer(0),
 					})
-					if err != nil {
-						showGroup := usingGroup
-						if usingGroup == "auto" {
-							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
+					if err != nil || channel == nil {
+						// 主模型无可用渠道，检查是否有降级链可用
+						if hasFallbackCandidates(c, modelRequest.Model) {
+							c.Set("original_model", modelRequest.Model)
+							c.Set("skip_primary_relay", true)
+							common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
+							c.Next()
+							return
 						}
-						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
-						// 如果错误，但是渠道不为空，说明是数据库一致性问题
-						//if channel != nil {
-						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
-						//	message = "数据库一致性已被破坏，请联系管理员"
-						//}
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
-						return
-					}
-					if channel == nil {
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						if err != nil {
+							showGroup := usingGroup
+							if usingGroup == "auto" {
+								showGroup = fmt.Sprintf("auto(%s)", selectGroup)
+							}
+							message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
+							abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
+						} else {
+							abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						}
 						return
 					}
 				}
@@ -427,4 +431,37 @@ func extractModelNameFromGeminiPath(path string) string {
 
 	// 返回模型名部分
 	return path[startIndex : startIndex+colonIndex]
+}
+
+// hasFallbackCandidates 检查是否有降级链候选模型（排除原始模型）。
+// 用于 distributor 在主模型无渠道时决定是否放行请求到降级链。
+func hasFallbackCandidates(c *gin.Context, originalModel string) bool {
+	// 令牌级降级链
+	var tokenFallbacks []string
+	tokenId := c.GetInt("token_id")
+	userId := c.GetInt("id")
+	if tokenId != 0 && userId != 0 {
+		token, err := model.GetTokenByIds(tokenId, userId)
+		if err == nil && token != nil {
+			tokenFallbacks = token.GetFallbackModels()
+		}
+	}
+
+	// 全局降级链
+	globalFallbacks := operation_setting.GetGlobalFallbackModels()
+
+	// 检查是否有至少一个非原始模型的候选
+	seen := make(map[string]struct{})
+	seen[originalModel] = struct{}{}
+	for _, m := range tokenFallbacks {
+		if _, exists := seen[m]; !exists {
+			return true
+		}
+	}
+	for _, m := range globalFallbacks {
+		if _, exists := seen[m]; !exists {
+			return true
+		}
+	}
+	return false
 }
