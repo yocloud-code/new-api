@@ -2,6 +2,7 @@ package minimax
 
 import (
 	"fmt"
+	"strings"
 
 	channelconstant "github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -18,6 +19,10 @@ func GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	case types.RelayFormatClaude:
 		return fmt.Sprintf("%s/anthropic/v1/messages", info.ChannelBaseUrl), nil
 	default:
+		// music 模型走音乐生成端点
+		if strings.HasPrefix(info.UpstreamModelName, "music-") {
+			return fmt.Sprintf("%s/v1/music_generation", baseUrl), nil
+		}
 		switch info.RelayMode {
 		case constant.RelayModeChatCompletions:
 			return fmt.Sprintf("%s/v1/text/chatcompletion_v2", baseUrl), nil
