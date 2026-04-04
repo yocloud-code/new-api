@@ -3,7 +3,6 @@ package router
 import (
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
-	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,9 +37,7 @@ func SetVideoRouter(router *gin.Engine) {
 	}
 	// MiniMax music generation route
 	{
-		videoV1Router.POST("/music_generation", func(c *gin.Context) {
-			controller.Relay(c, types.RelayFormatOpenAI)
-		})
+		videoV1Router.POST("/music_generation", controller.RelayTask)
 	}
 
 	klingV1Router := router.Group("/kling/v1")
