@@ -106,6 +106,12 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	}
 	_ = resp.Body.Close()
 
+	// Music models: pass through raw response directly
+	if strings.HasPrefix(info.UpstreamModelName, "music-") {
+		c.Data(resp.StatusCode, "application/json", responseBody)
+		return "", responseBody, nil
+	}
+
 	var hResp VideoResponse
 	if err := common.Unmarshal(responseBody, &hResp); err != nil {
 		taskErr = service.TaskErrorWrapper(errors.Wrapf(err, "body: %s", responseBody), "unmarshal_response_body_failed", http.StatusInternalServerError)
