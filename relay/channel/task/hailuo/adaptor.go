@@ -2,7 +2,6 @@ package hailuo
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
