@@ -78,8 +78,6 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeResponses
 	} else if strings.HasPrefix(path, "/v1/audio/speech") {
 		relayMode = RelayModeAudioSpeech
-	} else if strings.HasPrefix(path, "/v1/music_generation") {
-		relayMode = RelayModeAudioSpeech // routed to /v1/music_generation by MiniMax adaptor
 	} else if strings.HasPrefix(path, "/v1/audio/transcriptions") {
 		relayMode = RelayModeAudioTranscription
 	} else if strings.HasPrefix(path, "/v1/audio/translations") {

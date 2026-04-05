@@ -71,7 +71,6 @@ const EditTokenModal = (props) => {
     unlimited_quota: true,
     model_limits_enabled: false,
     model_limits: [],
-    fallback_models: [],
     allow_ips: '',
     group: '',
     cross_group_retry: false,
@@ -163,11 +162,6 @@ const EditTokenModal = (props) => {
       } else {
         data.model_limits = [];
       }
-      if (data.fallback_models && data.fallback_models !== '') {
-        data.fallback_models = data.fallback_models.split(',');
-      } else {
-        data.fallback_models = [];
-      }
       if (formApiRef.current) {
         formApiRef.current.setValues({ ...getInitValues(), ...data });
       }
@@ -227,7 +221,6 @@ const EditTokenModal = (props) => {
       }
       localInputs.model_limits = localInputs.model_limits.join(',');
       localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-      localInputs.fallback_models = (localInputs.fallback_models || []).join(',');
       let res = await API.put(`/api/token/`, {
         ...localInputs,
         id: parseInt(props.editingToken.id),
@@ -265,7 +258,6 @@ const EditTokenModal = (props) => {
         }
         localInputs.model_limits = localInputs.model_limits.join(',');
         localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-        localInputs.fallback_models = (localInputs.fallback_models || []).join(',');
         let res = await API.post(`/api/token/`, localInputs);
         const { success, message } = res.data;
         if (success) {
@@ -560,23 +552,6 @@ const EditTokenModal = (props) => {
                       multiple
                       optionList={models}
                       extraText={t('非必要，不建议启用模型限制')}
-                      filter={selectFilter}
-                      autoClearSearchValue={false}
-                      searchPosition='dropdown'
-                      showClear
-                      style={{ width: '100%' }}
-                    />
-                  </Col>
-                  <Col span={24}>
-                    <Form.Select
-                      field='fallback_models'
-                      label={t('降级调用链')}
-                      placeholder={t(
-                        '请选择降级模型，调用失败时将按顺序依次尝试',
-                      )}
-                      multiple
-                      optionList={models}
-                      extraText={t('当主模型所有渠道失败时，将按此顺序依次尝试降级模型直到成功')}
                       filter={selectFilter}
                       autoClearSearchValue={false}
                       searchPosition='dropdown'

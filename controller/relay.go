@@ -149,71 +149,89 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	relayInfo.SetEstimatePromptTokens(tokens)
 
-	skipPrimary := c.GetBool("skip_primary_relay")
+	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
+	if err != nil {
+		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError)
+		return
+	}
 
-	if !skipPrimary {
-		priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
-		if err != nil {
-			newAPIError = types.NewError(err, types.ErrorCodeModelPriceError)
+	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
+
+	if priceData.FreeModel {
+		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
+	} else {
+		newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
+		if newAPIError != nil {
 			return
 		}
+	}
 
-		// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
-
-		if priceData.FreeModel {
-			logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
-		} else {
-			newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
-			if newAPIError != nil {
-				return
+	defer func() {
+		// Only return quota if downstream failed and quota was actually pre-consumed
+		if newAPIError != nil {
+			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+			if relayInfo.Billing != nil {
+				relayInfo.Billing.Refund(c)
 			}
+			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+		}
+	}()
+
+	retryParam := &service.RetryParam{
+		Ctx:        c,
+		TokenGroup: relayInfo.TokenGroup,
+		ModelName:  relayInfo.OriginModelName,
+		Retry:      common.GetPointer(0),
+	}
+	relayInfo.RetryIndex = 0
+	relayInfo.LastError = nil
+
+	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		relayInfo.RetryIndex = retryParam.GetRetry()
+		channel, channelErr := getChannel(c, relayInfo, retryParam)
+		if channelErr != nil {
+			logger.LogError(c, channelErr.Error())
+			newAPIError = channelErr
+			break
 		}
 
-		defer func() {
-			// Only return quota if downstream failed and quota was actually pre-consumed
-			if newAPIError != nil {
-				newAPIError = service.NormalizeViolationFeeError(newAPIError)
-				if relayInfo.Billing != nil {
-					relayInfo.Billing.Refund(c)
-				}
-				service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+		addUsedChannel(c, channel.Id)
+		bodyStorage, bodyErr := common.GetBodyStorage(c)
+		if bodyErr != nil {
+			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
+			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
+				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+			} else {
+				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 			}
-		}()
+			break
+		}
+		c.Request.Body = io.NopCloser(bodyStorage)
 
-		// ── Primary model: channel-level retry loop ──
-		newAPIError = relayWithRetry(c, relayInfo, relayFormat)
+		switch relayFormat {
+		case types.RelayFormatOpenAIRealtime:
+			newAPIError = relay.WssHelper(c, relayInfo)
+		case types.RelayFormatClaude:
+			newAPIError = relay.ClaudeHelper(c, relayInfo)
+		case types.RelayFormatGemini:
+			newAPIError = geminiRelayHandler(c, relayInfo)
+		default:
+			newAPIError = relayHandler(c, relayInfo)
+		}
 
 		if newAPIError == nil {
+			relayInfo.LastError = nil
 			return
 		}
-	} else {
-		logger.LogInfo(c, fmt.Sprintf("[fallback] 主模型 %s 无可用渠道，跳过主模型直接进入降级链", relayInfo.OriginModelName))
-	}
 
-	// ── Fallback chain: try alternative models if primary failed (yocloud custom) ──
-	fallbackModels, tokenCount := getFallbackModels(c)
-	if len(fallbackModels) > 0 {
-		if tokenCount > 0 {
-			logger.LogInfo(c, fmt.Sprintf("[fallback] 主模型 %s 失败，开始降级调用链: %v", relayInfo.OriginModelName, fallbackModels[:tokenCount]))
-		}
-		originalModel := relayInfo.OriginModelName
-		fbErr := tryFallbackModels(c, relayInfo, relayFormat, fallbackModels, originalModel, meta, tokens, tokenCount)
-		if fbErr == nil {
-			newAPIError = nil
-			return
-		}
-		if tokenCount > 0 {
-			logger.LogError(c, fmt.Sprintf("[fallback] 降级调用链全部失败，原始模型: %s, 降级链: %v", originalModel, fallbackModels[:tokenCount]))
-		}
-	}
+		newAPIError = service.NormalizeViolationFeeError(newAPIError)
+		relayInfo.LastError = newAPIError
 
-	// 如果 skipPrimary 且降级链也全部失败或为空，返回原始的无渠道错误
-	if skipPrimary && newAPIError == nil {
-		newAPIError = types.NewError(
-			fmt.Errorf("模型 %s 无可用渠道，降级链也全部失败", relayInfo.OriginModelName),
-			types.ErrorCodeModelNotFound,
-			types.ErrOptionWithSkipRetry(),
-		)
+		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+
+		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+			break
+		}
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -322,6 +340,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	}
 	if code < 100 || code > 599 {
 		return true
+	}
+	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
+		return false
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
 }

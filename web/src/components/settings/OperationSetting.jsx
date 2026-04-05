@@ -27,7 +27,6 @@ import SettingsLog from '../../pages/Setting/Operation/SettingsLog';
 import SettingsMonitoring from '../../pages/Setting/Operation/SettingsMonitoring';
 import SettingsCreditLimit from '../../pages/Setting/Operation/SettingsCreditLimit';
 import SettingsCheckin from '../../pages/Setting/Operation/SettingsCheckin';
-import SettingsFallback from '../../pages/Setting/Operation/SettingsFallback';
 import { API, showError, toBoolean } from '../../helpers';
 
 const OperationSetting = () => {
@@ -82,9 +81,6 @@ const OperationSetting = () => {
 
     /* 令牌设置 */
     'token_setting.max_user_tokens': 1000,
-
-    /* 全局降级设置 */
-    'fallback_setting.fallback_models': '',
   });
 
   let [loading, setLoading] = useState(false);
@@ -149,10 +145,6 @@ const OperationSetting = () => {
         {/* 监控设置 */}
         <Card style={{ marginTop: '10px' }}>
           <SettingsMonitoring options={inputs} refresh={onRefresh} />
-        </Card>
-        {/* 全局降级设置 */}
-        <Card style={{ marginTop: '10px' }}>
-          <SettingsFallback options={inputs} refresh={onRefresh} />
         </Card>
         {/* 额度设置 */}
         <Card style={{ marginTop: '10px' }}>

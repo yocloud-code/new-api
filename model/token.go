@@ -28,12 +28,32 @@ type Token struct {
 	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
-	FallbackModels     string         `json:"fallback_models" gorm:"type:text"`  // 降级调用链，逗号分隔模型名 (yocloud custom)
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
 func (token *Token) Clean() {
 	token.Key = ""
+}
+
+func MaskTokenKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 4 {
+		return strings.Repeat("*", len(key))
+	}
+	if len(key) <= 8 {
+		return key[:2] + "****" + key[len(key)-2:]
+	}
+	return key[:4] + "**********" + key[len(key)-4:]
+}
+
+func (token *Token) GetFullKey() string {
+	return token.Key
+}
+
+func (token *Token) GetMaskedKey() string {
+	return MaskTokenKey(token.Key)
 }
 
 func (token *Token) GetIpLimits() []string {
@@ -202,7 +222,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 			}
 			keyPrefix := key[:3]
 			keySuffix := key[len(key)-3:]
-			return token, errors.New(fmt.Sprintf("[sk-%s***%s] 该令牌额度已用尽 !token.UnlimitedQuota && token.RemainQuota = %d", keyPrefix, keySuffix, token.RemainQuota))
+			return token, fmt.Errorf("[sk-%s***%s] 该令牌额度已用尽 !token.UnlimitedQuota && token.RemainQuota = %d", keyPrefix, keySuffix, token.RemainQuota)
 		}
 		return token, nil
 	}
@@ -284,7 +304,7 @@ func (token *Token) Update() (err error) {
 		}
 	}()
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "fallback_models").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry").Updates(token).Error
 	return err
 }
 
@@ -460,23 +480,4 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	return len(tokens), nil
-}
-
-// GetFallbackModels returns the fallback model chain as a slice (yocloud custom)
-func (token *Token) GetFallbackModels() []string {
-	if token.FallbackModels == "" {
-		return nil
-	}
-	models := strings.Split(token.FallbackModels, ",")
-	result := make([]string, 0, len(models))
-	for _, m := range models {
-		m = strings.TrimSpace(m)
-		if m != "" {
-			result = append(result, m)
-		}
-	}
-	if len(result) == 0 {
-		return nil
-	}
-	return result
 }

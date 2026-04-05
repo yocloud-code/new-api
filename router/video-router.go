@@ -30,15 +30,6 @@ func SetVideoRouter(router *gin.Engine) {
 		videoV1Router.POST("/videos", controller.RelayTask)
 		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
 	}
-	// MiniMax Hailuo video routes
-	{
-		videoV1Router.POST("/video_generation", controller.RelayTask)
-		videoV1Router.GET("/query/video_generation", controller.RelayTaskFetch)
-	}
-	// MiniMax music generation route
-	{
-		videoV1Router.POST("/music_generation", controller.RelayTask)
-	}
 
 	klingV1Router := router.Group("/kling/v1")
 	klingV1Router.Use(middleware.RouteTag("relay"))

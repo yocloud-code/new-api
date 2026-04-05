@@ -58,10 +58,8 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		if otherMap != nil {
 			// Remove admin-only debug fields.
 			delete(otherMap, "admin_info")
-			delete(otherMap, "reject_reason")
-			// Hide upstream model name from non-admin users (yocloud custom)
-			delete(otherMap, "upstream_model_name")
-			delete(otherMap, "is_model_mapped")
+			// delete(otherMap, "reject_reason")
+			delete(otherMap, "stream_status")
 		}
 		logs[i].Other = common.MapToJsonStr(otherMap)
 		logs[i].Id = startIdx + i + 1
