@@ -2,6 +2,7 @@ package hailuo
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,10 +38,17 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
+	// Store raw body for pass-through (music, I2V with first_frame_image, etc.)
+	bodyBytes, _ := io.ReadAll(c.Request.Body)
+	c.Set("raw_task_body", bodyBytes)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate)
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if strings.HasPrefix(info.UpstreamModelName, "music-") {
+		return fmt.Sprintf("%s/v1/music_generation", a.baseURL), nil
+	}
 	return fmt.Sprintf("%s%s", a.baseURL, TextToVideoEndpoint), nil
 }
 
@@ -52,25 +60,38 @@ func (a *TaskAdaptor) BuildRequestHeader(c *gin.Context, req *http.Request, info
 }
 
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
-	v, exists := c.Get("task_request")
+	rawBody, exists := c.Get("raw_task_body")
 	if !exists {
-		return nil, fmt.Errorf("request not found in context")
+		return nil, fmt.Errorf("raw request body not found in context")
 	}
-	req, ok := v.(relaycommon.TaskSubmitReq)
-	if !ok {
-		return nil, fmt.Errorf("invalid request type in context")
+	bodyBytes := rawBody.([]byte)
+
+	// Music models: pass through raw body directly
+	if strings.HasPrefix(info.UpstreamModelName, "music-") {
+		return bytes.NewReader(bodyBytes), nil
 	}
 
-	body, err := a.convertToRequestPayload(&req, info)
-	if err != nil {
-		return nil, errors.Wrap(err, "convert request payload failed")
+	// Video models: parse raw body into VideoRequest to preserve all fields
+	var videoRequest VideoRequest
+	if err := common.Unmarshal(bodyBytes, &videoRequest); err != nil {
+		return nil, errors.Wrap(err, "unmarshal video request failed")
 	}
 
-	data, err := common.Marshal(body)
+	// Apply defaults
+	modelConfig := GetModelConfig(info.UpstreamModelName)
+	if videoRequest.Duration == nil || *videoRequest.Duration == 0 {
+		d := DefaultDuration
+		videoRequest.Duration = &d
+	}
+	if videoRequest.Resolution == "" {
+		videoRequest.Resolution = modelConfig.DefaultResolution
+	}
+	videoRequest.Model = info.UpstreamModelName
+
+	data, err := common.Marshal(videoRequest)
 	if err != nil {
 		return nil, err
 	}
-
 	return bytes.NewReader(data), nil
 }
 
