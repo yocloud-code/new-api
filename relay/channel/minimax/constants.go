@@ -30,6 +30,7 @@ var ModelList = []string{
 	"speech-01-turbo",
 	// Image models
 	"image-01",
+	"image-01-live",
 	// Music models
 	"music-2.5",
 }
