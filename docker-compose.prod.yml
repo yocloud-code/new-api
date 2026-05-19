@@ -16,6 +16,7 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       - ./data:/data
+      - ./images:/data/images
     labels:
       - com.centurylinklabs.watchtower.enable=true
     deploy:

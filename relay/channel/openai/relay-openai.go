@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 
@@ -569,6 +570,11 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
+	// 图片生成响应：将 base64 转为本地存储 URL
+	if info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits {
+		responseBody = convertImageBase64ToURL(c, responseBody)
+	}
+
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
@@ -588,6 +594,47 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	}
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 	return &usageResp.Usage, nil
+}
+
+// convertImageBase64ToURL 将图片响应中的 base64 数据存储到本地并替换为 URL
+func convertImageBase64ToURL(c *gin.Context, responseBody []byte) []byte {
+	var imageResp dto.ImageResponse
+	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
+		return responseBody
+	}
+
+	modified := false
+	for i := range imageResp.Data {
+		b64Data := imageResp.Data[i].B64Json
+		if b64Data == "" {
+			// 检查 url 字段是否是 data URI (base64)
+			if strings.HasPrefix(imageResp.Data[i].Url, "data:image/") {
+				b64Data = imageResp.Data[i].Url
+			} else {
+				continue
+			}
+		}
+
+		relativePath, err := service.SaveBase64ToLocal(b64Data)
+		if err != nil {
+			logger.LogError(c, "failed to save image to local: "+err.Error())
+			continue
+		}
+
+		imageResp.Data[i].Url = service.GetImageURL(relativePath)
+		imageResp.Data[i].B64Json = ""
+		modified = true
+	}
+
+	if !modified {
+		return responseBody
+	}
+
+	newBody, err := common.Marshal(imageResp)
+	if err != nil {
+		return responseBody
+	}
+	return newBody
 }
 
 func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, responseBody []byte) {
