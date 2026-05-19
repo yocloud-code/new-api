@@ -576,7 +576,13 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	}
 
 	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if c.GetBool("image_keepalive_sent") {
+		// header 已发送（心跳保活模式），直接写 body
+		c.Writer.Write(responseBody)
+		c.Writer.Flush()
+	} else {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+	}
 
 	// Once we've written to the client, we should not return errors anymore
 	// because the upstream has already consumed resources and returned content

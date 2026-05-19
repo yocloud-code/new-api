@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -83,9 +84,42 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
+	// 启动 chunked 心跳保活，防止 Cloudflare 100 秒空闲超时
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.Flush()
+	c.Set("image_keepalive_sent", true)
+
+	stopKeepAlive := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				c.Writer.Write([]byte(" "))
+				c.Writer.Flush()
+			case <-stopKeepAlive:
+				return
+			}
+		}
+	}()
+
 	resp, err := adaptor.DoRequest(c, info, requestBody)
+	close(stopKeepAlive)
+
 	if err != nil {
-		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
+		// header 已发送，无法返回错误状态码，写入 JSON 错误体
+		openAIErr := types.OpenAIError{
+			Message: err.Error(),
+			Type:    "upstream_error",
+			Code:    types.ErrorCodeDoRequestFailed,
+		}
+		errBody, _ := common.Marshal(gin.H{"error": openAIErr})
+		c.Writer.Write(errBody)
+		c.Writer.Flush()
+		return nil
 	}
 	var httpResp *http.Response
 	if resp != nil {
@@ -99,7 +133,12 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 				newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 				// reset status code 重置状态码
 				service.ResetStatusCode(newAPIError, statusCodeMappingStr)
-				return newAPIError
+				// header 已发送，写入 JSON 错误体
+				openAIErr := newAPIError.ToOpenAIError()
+				errBody, _ := common.Marshal(gin.H{"error": openAIErr})
+				c.Writer.Write(errBody)
+				c.Writer.Flush()
+				return nil
 			}
 		}
 	}
@@ -108,7 +147,12 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	if newAPIError != nil {
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
-		return newAPIError
+		// header 已发送，写入 JSON 错误体
+		openAIErr := newAPIError.ToOpenAIError()
+		errBody, _ := common.Marshal(gin.H{"error": openAIErr})
+		c.Writer.Write(errBody)
+		c.Writer.Flush()
+		return nil
 	}
 
 	imageN := uint(1)
