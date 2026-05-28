@@ -616,6 +616,16 @@ func convertImageBase64ToURL(c *gin.Context, responseBody []byte) []byte {
 			// 检查 url 字段是否是 data URI (base64)
 			if strings.HasPrefix(imageResp.Data[i].Url, "data:image/") {
 				b64Data = imageResp.Data[i].Url
+			} else if imageResp.Data[i].Url != "" && !service.IsLocalImageURL(imageResp.Data[i].Url) {
+				// 第三方 URL，下载到本地解决跨域问题
+				relativePath, err := service.SaveURLToLocal(imageResp.Data[i].Url)
+				if err != nil {
+					logger.LogError(c, "failed to download remote image: "+err.Error())
+					continue
+				}
+				imageResp.Data[i].Url = service.GetImageURL(relativePath)
+				modified = true
+				continue
 			} else {
 				continue
 			}

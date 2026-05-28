@@ -3,6 +3,8 @@ package service
 import (
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +64,53 @@ func GetImageURL(relativePath string) string {
 		serverAddr = "http://localhost:3000"
 	}
 	return serverAddr + relativePath
+}
+
+// SaveURLToLocal 下载远程图片并保存到本地，返回相对路径
+func SaveURLToLocal(imageURL string) (string, error) {
+	resp, err := DoDownloadRequest(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+	if err != nil {
+		return "", fmt.Errorf("failed to read image: %w", err)
+	}
+
+	ext := detectImageExt(data)
+
+	now := time.Now()
+	dateDir := now.Format("2006/01/02")
+	dirPath := filepath.Join(imageStorageDir, dateDir)
+
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	filename := fmt.Sprintf("%s%s", common.GetUUID(), ext)
+	filePath := filepath.Join(dirPath, filename)
+
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write image file: %w", err)
+	}
+
+	relativePath := fmt.Sprintf("/images/%s/%s", dateDir, filename)
+	return relativePath, nil
+}
+
+// IsLocalImageURL 判断 URL 是否已经是本站的图片 URL
+func IsLocalImageURL(url string) bool {
+	serverAddr := strings.TrimRight(system_setting.ServerAddress, "/")
+	if serverAddr != "" && strings.HasPrefix(url, serverAddr) {
+		return true
+	}
+	return false
 }
 
 // detectImageExt 根据文件头检测图片格式
