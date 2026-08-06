@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/types"
@@ -51,12 +52,74 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 
 	updateOpenAIImageCount(info, gjson.GetBytes(responseBody, "data.#").Int())
 
+	// 图片生成响应：将 base64 转为本地存储 URL
+	if info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits {
+		responseBody = convertImageBase64ToURL(c, responseBody)
+	}
+
 	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if c.GetBool("image_keepalive_sent") {
+		// header 已发送（心跳保活模式），直接写 body
+		c.Writer.Write(responseBody)
+		c.Writer.Flush()
+	} else {
+		service.IOCopyBytesGracefully(c, resp, responseBody)
+	}
 
 	normalizeOpenAIUsage(&usageResp.Usage)
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 	return &usageResp.Usage, nil
+}
+
+// convertImageBase64ToURL 将图片响应中的 base64 数据存储到本地并替换为 URL
+func convertImageBase64ToURL(c *gin.Context, responseBody []byte) []byte {
+	var imageResp dto.ImageResponse
+	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
+		return responseBody
+	}
+
+	modified := false
+	for i := range imageResp.Data {
+		b64Data := imageResp.Data[i].B64Json
+		if b64Data == "" {
+			// 检查 url 字段是否是 data URI (base64)
+			if strings.HasPrefix(imageResp.Data[i].Url, "data:image/") {
+				b64Data = imageResp.Data[i].Url
+			} else if imageResp.Data[i].Url != "" && !service.IsLocalImageURL(imageResp.Data[i].Url) {
+				// 第三方 URL，下载到本地解决跨域问题
+				relativePath, err := service.SaveURLToLocal(imageResp.Data[i].Url)
+				if err != nil {
+					logger.LogError(c, "failed to download remote image: "+err.Error())
+					continue
+				}
+				imageResp.Data[i].Url = service.GetImageURL(relativePath)
+				modified = true
+				continue
+			} else {
+				continue
+			}
+		}
+
+		relativePath, err := service.SaveBase64ToLocal(b64Data)
+		if err != nil {
+			logger.LogError(c, "failed to save image to local: "+err.Error())
+			continue
+		}
+
+		imageResp.Data[i].Url = service.GetImageURL(relativePath)
+		imageResp.Data[i].B64Json = ""
+		modified = true
+	}
+
+	if !modified {
+		return responseBody
+	}
+
+	newBody, err := common.Marshal(imageResp)
+	if err != nil {
+		return responseBody
+	}
+	return newBody
 }
 
 // normalizeOpenAIUsage maps the OpenAI Images usage shape (input_tokens /
